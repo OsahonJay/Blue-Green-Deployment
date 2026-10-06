@@ -152,5 +152,8 @@
     <p>&copy; 2024 Code With Goldencat. All rights reserved. | <a href="#" class="custom-link">Privacy Policy</a> | <a href="#" class="custom-link">Terms of Service</a></p>
 </footer>
 
+<div th:text="${appColor} + ' ' + ${appVersion}"
+     th:style="${appColor} == 'green' ? 'background:#2e9e4f' : 'background:#1e66f5'"
+     style="position:fixed;bottom:12px;right:12px;padding:8px 14px;border-radius:6px;color:#fff;font:bold 14px Arial;z-index:2000;">unknown</div>
 </body>
 </html>

@@ -197,5 +197,8 @@
 <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.3/dist/umd/popper.min.js"></script>
 <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+<div th:text="${appColor} + ' ' + ${appVersion}"
+     th:style="${appColor} == 'green' ? 'background:#2e9e4f' : 'background:#1e66f5'"
+     style="position:fixed;bottom:12px;right:12px;padding:8px 14px;border-radius:6px;color:#fff;font:bold 14px Arial;z-index:2000;">unknown</div>
 </body>
 </html>
