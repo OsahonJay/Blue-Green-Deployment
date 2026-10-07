@@ -37,3 +37,4 @@ build/
 *.tfstate.*
 .terraform/
 terraform.tfvars
+ansible/inventory/hosts.ini

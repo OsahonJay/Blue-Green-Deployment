@@ -1,0 +1,90 @@
+---
+# Called with: ansible-playbook deploy.yml --limit <blue|green>
+# --limit is what makes this deploy the idle color only, never both at once.
+- name: Deploy bankapp to target color
+  hosts: all
+  become: true
+  vars:
+    health_check_path: /login
+    health_check_retries: 10
+    health_check_delay: 6
+    docker_sdk_venv: /opt/docker-sdk-venv
+
+  tasks:
+    - name: Ensure Docker is installed
+      package:
+        name: docker
+        state: present
+
+    - name: Ensure Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ensure pip is installed
+      package:
+        name: python3-pip
+        state: present
+
+    # Own virtualenv: a system-wide pip install collides with rpm-managed
+    # requests/urllib3 on Amazon Linux and breaks the system Python.
+    - name: Install Docker SDK for Python in a dedicated virtualenv
+      pip:
+        name: docker
+        virtualenv: "{{ docker_sdk_venv }}"
+        virtualenv_command: python3 -m venv
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: true
+
+    - name: Log in to the container registry
+      community.docker.docker_login:
+        registry_url: "{{ registry_url | default(omit) }}"
+        username: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+      when: registry_username is defined
+      vars:
+        ansible_python_interpreter: "{{ docker_sdk_venv }}/bin/python"
+
+    - name: Stop and remove existing container, if present
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        state: absent
+      ignore_errors: true
+      vars:
+        ansible_python_interpreter: "{{ docker_sdk_venv }}/bin/python"
+
+    - name: Run the new container
+      community.docker.docker_container:
+        name: "{{ container_name }}"
+        image: "{{ docker_image }}"
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ app_port }}:{{ app_port }}"
+        env:
+          SPRING_DATASOURCE_URL: "jdbc:mysql://{{ rds_endpoint }}:3306/{{ db_name }}?useSSL=true&serverTimezone=UTC"
+          SPRING_DATASOURCE_USERNAME: "{{ db_username }}"
+          SPRING_DATASOURCE_PASSWORD: "{{ db_password }}"
+          APP_COLOR: "{{ color }}"
+          APP_VERSION: "{{ image_tag }}"
+      vars:
+        ansible_python_interpreter: "{{ docker_sdk_venv }}/bin/python"
+
+    - name: Wait for the app to answer on /login
+      uri:
+        url: "http://localhost:{{ app_port }}{{ health_check_path }}"
+        status_code: 200
+        timeout: 5
+      register: health_result
+      until: health_result.status == 200
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+
+    - name: Report deploy result
+      debug:
+        msg: "{{ inventory_hostname }} ({{ color }}) is up and responding on {{ health_check_path }}"

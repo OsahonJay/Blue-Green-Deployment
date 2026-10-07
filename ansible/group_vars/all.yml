@@ -1,0 +1,8 @@
+---
+app_port: 8080
+docker_image: "{{ image_repo }}:{{ image_tag }}"   # both passed via --extra-vars from Jenkins
+container_name: bankapp
+
+db_name: bankapp
+db_username: bankapp_admin
+db_password: "{{ lookup('env', 'DB_PASSWORD') }}"   # never store this in group_vars itself
