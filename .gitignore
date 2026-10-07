@@ -38,3 +38,6 @@ build/
 .terraform/
 terraform.tfvars
 ansible/inventory/hosts.ini
+
+# macOS
+.DS_Store
