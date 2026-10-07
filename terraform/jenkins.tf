@@ -57,7 +57,7 @@ resource "aws_iam_role_policy" "jenkins" {
       {
         Sid      = "ReadOnlyLookups"
         Effect   = "Allow"
-        Action   = ["ec2:DescribeInstances", "elasticloadbalancing:Describe*"]
+        Action   = ["ec2:DescribeInstances", "rds:DescribeDBInstances", "elasticloadbalancing:Describe*"]
         Resource = "*"
       },
       {

@@ -1,137 +1,143 @@
 pipeline {
     agent any
-    
-    parameters {
-        choice(name: 'DEPLOY_ENV', choices: ['blue', 'green'], description: 'Choose which environment to deploy: Blue or Green')
-        choice(name: 'DOCKER_TAG', choices: ['blue', 'green'], description: 'Choose the Docker image tag for the deployment')
-        booleanParam(name: 'SWITCH_TRAFFIC', defaultValue: false, description: 'Switch traffic between Blue and Green')
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
-    
+
+    parameters {
+        booleanParam(name: 'FLIP_TRAFFIC', defaultValue: true,
+                     description: 'Switch live traffic to the new version once the idle color passes verification')
+        booleanParam(name: 'SIMULATE_FAILURE', defaultValue: false,
+                     description: 'Fail the post-switch check on purpose to prove the automatic rollback')
+    }
+
     environment {
-        IMAGE_NAME = "adijaiswal/bankapp"
-        TAG = "${params.DOCKER_TAG}"  // The image tag now comes from the parameter
-        KUBE_NAMESPACE = 'webapps'
-        SCANNER_HOME= tool 'sonar-scanner'
+        IMAGE_REPO         = 'osahonseth1/bankapp'
+        IMAGE_TAG          = "build-${env.BUILD_NUMBER}"
+        AWS_DEFAULT_REGION = 'eu-west-2'
+        PROJECT            = 'bluegreen-bankapp'
     }
 
     stages {
-        stage('Git Checkout') {
+        stage('Build and test') {
             steps {
-                git branch: 'main', credentialsId: 'git-cred', url: 'https://github.com/jaiswaladi246/3-Tier-NodeJS-MySql-Docker.git'
+                sh './mvnw -B clean package'
             }
-        }
-        
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonar') {
-                    sh "$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=nodejsmysql -Dsonar.projectName=nodejsmysql"
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'target/surefire-reports/*.xml'
                 }
             }
         }
-        
-        stage('Trivy FS Scan') {
-            steps {
-                sh "trivy fs --format table -o fs.html ."
-            }
-        }
-        
-        stage('Docker build') {
-            steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-cred') {
-                        sh "docker build -t ${IMAGE_NAME}:${TAG} ."
-                    }
-                }
-            }
-        }
-        
-        stage('Trivy Image Scan') {
-            steps {
-                sh "trivy image --format table -o image.html ${IMAGE_NAME}:${TAG}"
-            }
-        }
-        
-        stage('Docker Push Image') {
-            steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-cred') {
-                        sh "docker push ${IMAGE_NAME}:${TAG}"
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy MySQL Deployment and Service') {
-            steps {
-                script {
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://46743932FDE6B34C74566F392E30CABA.gr7.ap-south-1.eks.amazonaws.com') {
-                        sh "kubectl apply -f mysql-ds.yml -n ${KUBE_NAMESPACE}"  // Ensure you have the MySQL deployment YAML ready
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy SVC-APP') {
-            steps {
-                script {
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://46743932FDE6B34C74566F392E30CABA.gr7.ap-south-1.eks.amazonaws.com') {
-                        sh """ if ! kubectl get svc bankapp-service -n ${KUBE_NAMESPACE}; then
-                                kubectl apply -f bankapp-service.yml -n ${KUBE_NAMESPACE}
-                              fi
-                        """
-                   }
-                }
-            }
-        }
-        
-        stage('Deploy to Kubernetes') {
-            steps {
-                script {
-                    def deploymentFile = ""
-                    if (params.DEPLOY_ENV == 'blue') {
-                        deploymentFile = 'app-deployment-blue.yml'
-                    } else {
-                        deploymentFile = 'app-deployment-green.yml'
-                    }
 
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://46743932FDE6B34C74566F392E30CABA.gr7.ap-south-1.eks.amazonaws.com') {
-                        sh "kubectl apply -f ${deploymentFile} -n ${KUBE_NAMESPACE}"
-                    }
+        stage('Build and push image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                        set -e
+                        docker build -t "$IMAGE_REPO:$IMAGE_TAG" .
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                        docker push "$IMAGE_REPO:$IMAGE_TAG"
+                        docker logout
+                    '''
                 }
             }
         }
-        
-        stage('Switch Traffic Between Blue & Green Environment') {
-            when {
-                expression { return params.SWITCH_TRAFFIC }
-            }
-            steps {
-                script {
-                    def newEnv = params.DEPLOY_ENV
 
-                    // Always switch traffic based on DEPLOY_ENV
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://46743932FDE6B34C74566F392E30CABA.gr7.ap-south-1.eks.amazonaws.com') {
-                        sh '''
-                            kubectl patch service bankapp-service -p "{\\"spec\\": {\\"selector\\": {\\"app\\": \\"bankapp\\", \\"version\\": \\"''' + newEnv + '''\\"}}}" -n ${KUBE_NAMESPACE}
-                        '''
-                    }
-                    echo "Traffic has been switched to the ${newEnv} environment."
+        stage('Find live and idle color') {
+            steps {
+                script {
+                    env.LIVE = sh(script: './scripts/bluegreen.sh live', returnStdout: true).trim()
+                    env.IDLE = (env.LIVE == 'blue') ? 'green' : 'blue'
+                    echo "Live color: ${env.LIVE}. Deploying ${env.IMAGE_TAG} to the idle color: ${env.IDLE}"
                 }
             }
         }
-        
-        stage('Verify Deployment') {
+
+        stage('Deploy to idle color') {
             steps {
-                script {
-                    def verifyEnv = params.DEPLOY_ENV
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://46743932FDE6B34C74566F392E30CABA.gr7.ap-south-1.eks.amazonaws.com') {
-                        sh """
-                        kubectl get pods -l version=${verifyEnv} -n ${KUBE_NAMESPACE}
-                        kubectl get svc bankapp-service -n ${KUBE_NAMESPACE}
-                        """
-                    }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'app-ssh-key', keyFileVariable: 'SSH_KEY'),
+                    string(credentialsId: 'db-password', variable: 'DB_PASSWORD')
+                ]) {
+                    sh '''
+                        set -e
+                        ./scripts/bluegreen.sh inventory "$IDLE" ansible/inventory/hosts.ini
+                        cd ansible
+                        ansible-playbook deploy.yml --limit "$IDLE" --private-key "$SSH_KEY" \
+                            -e image_repo="$IMAGE_REPO" -e image_tag="$IMAGE_TAG" \
+                            -e health_check_retries=30
+                    '''
                 }
             }
+        }
+
+        stage('Verify idle color directly') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'app-ssh-key', keyFileVariable: 'SSH_KEY')]) {
+                    sh './scripts/bluegreen.sh verify "$IDLE" "$IMAGE_TAG" "$SSH_KEY"'
+                }
+            }
+        }
+
+        stage('Pre-warm idle color') {
+            steps {
+                sh './scripts/bluegreen.sh prewarm "$LIVE" "$IDLE"'
+            }
+        }
+
+        stage('Switch traffic') {
+            when { expression { return params.FLIP_TRAFFIC } }
+            steps {
+                script { env.FLIPPED = 'true' }
+                sh '''
+                    set -e
+                    ./scripts/bluegreen.sh flip "$IDLE"
+                    ./scripts/bluegreen.sh wait-live "$IDLE" "$IMAGE_TAG"
+                '''
+            }
+        }
+
+        stage('Post-switch check') {
+            when { expression { return params.FLIP_TRAFFIC } }
+            steps {
+                script {
+                    if (params.SIMULATE_FAILURE) {
+                        error('Simulated failure: the post-switch check was made to fail on purpose')
+                    }
+                }
+                sh './scripts/bluegreen.sh soak "$IDLE" "$IMAGE_TAG" 15'
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (params.FLIP_TRAFFIC) {
+                    echo "Done: ${env.IMAGE_TAG} is live on ${env.IDLE}. ${env.LIVE} is idle and holds the previous version for rollback."
+                } else {
+                    echo "Done: ${env.IMAGE_TAG} is deployed and verified on ${env.IDLE}, but traffic was not switched."
+                }
+            }
+        }
+        failure {
+            script {
+                if (env.FLIPPED == 'true') {
+                    echo "Failure after the switch: rolling traffic back to ${env.LIVE}"
+                    sh './scripts/bluegreen.sh rollback "$LIVE"'
+                } else {
+                    echo 'Failure before the switch: live traffic was never touched.'
+                }
+            }
+        }
+        always {
+            sh 'docker image prune -af --filter "until=24h" || true'
         }
     }
 }
