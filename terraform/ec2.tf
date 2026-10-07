@@ -4,6 +4,7 @@ resource "aws_instance" "blue" {
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.app.id]
   key_name               = var.key_name
+  iam_instance_profile   = aws_iam_instance_profile.app.name
 
   tags = {
     Name  = "${var.project_name}-blue"
@@ -17,6 +18,7 @@ resource "aws_instance" "green" {
   subnet_id              = aws_subnet.public[1].id
   vpc_security_group_ids = [aws_security_group.app.id]
   key_name               = var.key_name
+  iam_instance_profile   = aws_iam_instance_profile.app.name
 
   tags = {
     Name  = "${var.project_name}-green"

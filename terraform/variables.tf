@@ -77,3 +77,9 @@ variable "ami_id" {
   description = "AMI for all EC2 instances (Amazon Linux 2023)"
   type        = string
 }
+
+variable "alert_email" {
+  description = "Optional email address for CloudWatch alarm notifications (leave empty to skip)"
+  type        = string
+  default     = ""
+}

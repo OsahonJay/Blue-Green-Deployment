@@ -64,6 +64,11 @@
         image: "{{ docker_image }}"
         state: started
         restart_policy: unless-stopped
+        log_driver: awslogs
+        log_options:
+          awslogs-region: "{{ aws_region | default('eu-west-2') }}"
+          awslogs-group: /bluegreen/bankapp
+          awslogs-stream: "{{ color }}-{{ image_tag }}"
         ports:
           - "{{ app_port }}:{{ app_port }}"
         env:
